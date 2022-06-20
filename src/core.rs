@@ -16,8 +16,7 @@ pub struct Tile {
 }
 
 pub struct SelectEvent {
-    pub row: i32,
-    pub column: i32,
+    pub id: u32,
     pub player: Entity,
 }
 
@@ -27,9 +26,135 @@ pub struct CaptureEvent {
     pub player: Entity,
 }
 
+pub enum PlayerKind {
+    Human,
+    Bot(Timer),
+}
+
 #[derive(Component)]
 pub struct Player {
+    pub kind: PlayerKind,
     pub score: u32,
+}
+
+pub struct GameState {
+    // The head of this vec is always the 'current' player
+    pub players: Vec<Entity>,
+}
+
+fn for_each_selected_tile(
+    tiles: &mut Query<&mut Tile>,
+    selection: u32,
+    player: Entity,
+    mut callback: impl FnMut(&mut Tile),
+) {
+    let mut owned_tiles = tiles
+        .iter()
+        .filter(|tile| match tile.state {
+            TileState::Owned(owner) => owner == player,
+            _ => false,
+        })
+        .map(|tile| (tile.row, tile.column))
+        .collect::<HashSet<(i32, i32)>>();
+
+    loop {
+        let mut did_capture = false;
+
+        for mut tile in tiles.iter_mut() {
+            println!("Considering tile at {},{}", tile.row, tile.column);
+
+            if owned_tiles.contains(&(tile.row, tile.column)) {
+                continue;
+            }
+
+            // TODO: if we capture (or skip) we should jump out to the next tile
+            for row_offset in [-1, 0, 1] {
+                for column_offset in [-1, 0, 1] {
+                    if row_offset == 0 && column_offset == 0 {
+                        continue;
+                    }
+
+                    if tile.row % 2 == 0 && row_offset != 0 && column_offset == -1 {
+                        continue;
+                    }
+
+                    if tile.row % 2 != 0 && row_offset != 0 && column_offset == 1 {
+                        continue;
+                    }
+
+                    if !owned_tiles.contains(&(tile.row + row_offset, tile.column + column_offset))
+                    {
+                        continue;
+                    }
+
+                    println!(
+                        "  candidate because owned tile at {},{}",
+                        tile.row + row_offset,
+                        tile.column + column_offset
+                    );
+
+                    match tile.state {
+                        TileState::Unowned(id) => {
+                            if id == selection {
+                                owned_tiles.insert((tile.row, tile.column));
+                                did_capture = true;
+                                callback(&mut tile);
+                                println!("  captured tile at {},{}", tile.row, tile.column);
+                            } else {
+                                println!(
+                                    "  no capture because id = {}, but selection = {}",
+                                    id, selection
+                                );
+                            }
+                        }
+                        ref state => {
+                            println!("  no capture because tile state = {:?}", state);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !did_capture {
+            break;
+        }
+    }
+}
+
+pub fn perform_ai_move(
+    state: Res<GameState>,
+    players: Query<&Player>,
+    mut selections: EventWriter<SelectEvent>,
+    mut tiles: Query<&mut Tile>,
+) {
+    let player = match players.get(state.players[0]) {
+        Ok(player) => match player.kind {
+            PlayerKind::Bot(_) => state.players[0],
+            _ => return,
+        },
+        Err(_) => return,
+    };
+
+    println!("First player is a bot. Making a move");
+
+    let mut best_score = 0;
+    let mut best_move = 0;
+    for id in 0..5 {
+        let mut score = 0;
+        for_each_selected_tile(&mut tiles, id, player, |_| {
+            score += 1;
+        });
+        if score > best_score {
+            best_score = score;
+            best_move = id;
+        }
+    }
+
+    selections.send(SelectEvent {
+        player,
+        id: best_move,
+    });
 }
 
 pub fn update_scores(mut players: Query<&mut Player>, tiles: Query<&Tile>) {
@@ -49,84 +174,24 @@ pub fn update_scores(mut players: Query<&mut Player>, tiles: Query<&Tile>) {
     }
 }
 
-pub fn perform_selection(mut selections: EventReader<SelectEvent>,
-                     mut tiles: Query<&mut Tile>,
-                     mut captures: EventWriter<CaptureEvent>) {
+pub fn perform_selection(
+    mut state: ResMut<GameState>,
+    mut selections: EventReader<SelectEvent>,
+    mut tiles: Query<&mut Tile>,
+    mut captures: EventWriter<CaptureEvent>,
+) {
     for selection in selections.iter() {
-        let selected_tile = tiles
-            .iter()
-            .find(|tile| tile.row == selection.row && tile.column == selection.column);
-        let selected_id = if let Some(tile) = selected_tile {
-            match tile.state {
-                TileState::Unowned(id) => id,
-                _ => continue,
-            }
-        } else {
-            //TODO: log this
-            continue;
-        };
+        for_each_selected_tile(&mut tiles, selection.id, selection.player, |tile| {
+            tile.state = TileState::Owned(selection.player);
+            println!("  capture of tile at {},{}", tile.row, tile.column);
+            captures.send(CaptureEvent {
+                row: tile.row,
+                column: tile.column,
+                player: selection.player,
+            });
+        });
 
-        loop {
-            let mut did_capture = false;
-            let owned_tiles = tiles
-                .iter()
-                .filter(|tile| match tile.state {
-                    TileState::Owned(owner) => owner == selection.player,
-                    _ => false
-                })
-                .map(|tile| (tile.row, tile.column))
-                .collect::<HashSet<(i32, i32)>>();
-
-            for mut tile in tiles.iter_mut() {
-
-                println!("Considering tile at {},{}", tile.row, tile.column);
-
-                for row_offset in [-1, 0, 1] {
-                    for column_offset in [-1, 0, 1] {
-                        if tile.row % 2 == 0 && row_offset != 0 && column_offset == -1 {
-                            continue;
-                        }
-
-                        if tile.row % 2 != 0 && row_offset != 0 && column_offset == 1 {
-                            continue;
-                        }
-
-                        if !owned_tiles
-                            .contains(&(tile.row + row_offset, tile.column + column_offset))
-                        {
-                            continue;
-                        }
-
-                        println!("  candidate because owned tile at {},{}", tile.row + row_offset, tile.column + column_offset);
-
-                        match tile.state {
-                            TileState::Unowned(id) => {
-                                if id == selected_id {
-                                    tile.state = TileState::Owned(selection.player);
-                                    println!("  capture of tile at {},{}", tile.row, tile.column);
-                                    captures.send(CaptureEvent {
-                                        row: tile.row,
-                                        column: tile.column,
-                                        player: selection.player
-                                    });
-                                    did_capture = true;
-                                } else {
-                                    println!("  no capture because id = {}, but selection = {}", id, selected_id);
-                                }
-                            }
-                            ref state => {
-                                println!("  no capture because tile state = {:?}", state);
-                                continue
-                            },
-                        }
-                    }
-                }
-            }
-
-            if !did_capture {
-                break;
-            }
-        }
+        state.players.rotate_right(1);
     }
 }
 
@@ -140,7 +205,14 @@ mod test {
         // Setup app
         let mut app = App::new();
 
-        let player_id = app.world.spawn().insert(Player { score: 0 }).id();
+        let player_id = app
+            .world
+            .spawn()
+            .insert(Player {
+                score: 0,
+                kind: PlayerKind::Human,
+            })
+            .id();
 
         for row in 0..10 {
             for column in 0..10 {
@@ -154,14 +226,16 @@ mod test {
 
         app.add_event::<CaptureEvent>();
         app.add_event::<SelectEvent>();
+        app.insert_resource(GameState {
+            players: vec![player_id],
+        });
         app.add_system(update_scores);
         app.add_system(perform_selection.before(update_scores));
 
         let mut events = app.world.resource_mut::<Events<SelectEvent>>();
         events.send(SelectEvent {
             player: player_id,
-            row: 0,
-            column: 0,
+            id: 0,
         });
 
         // Run systems

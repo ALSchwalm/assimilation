@@ -1,14 +1,17 @@
-use bevy::{core::FixedTimestep, prelude::*, sprite::MaterialMesh2dBundle};
+use bevy::{core::FixedTimestep, prelude::*};
 use bevy_prototype_lyon::prelude::*;
-use std::f64::consts::PI;
+use rand::{thread_rng, Rng};
 use std::collections::BTreeMap;
-use rand::{Rng, thread_rng};
+use std::f64::consts::PI;
+use std::time::Duration;
 
 mod core;
 
-const TILE_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
+const PLAYER_COLOR: Color = Color::CYAN;
+const BOT_COLOR: Color = Color::PINK;
 const TILE_RADIUS: f32 = 15.0;
 const TIME_STEP: f32 = 1.0 / 60.0;
+const SCALE_FACTOR: f32 = 2.0;
 
 fn point_inside_tile(tile_center: Vec2, point: Vec2) -> bool {
     let d = TILE_RADIUS * 2.0;
@@ -20,13 +23,21 @@ fn point_inside_tile(tile_center: Vec2, point: Vec2) -> bool {
 
 fn update_tile_colors(
     mut capture_events: EventReader<core::CaptureEvent>,
+    players: Query<&core::Player>,
     mut tiles: Query<(&core::Tile, &mut DrawMode)>,
 ) {
     for capture in capture_events.iter() {
         for mut tile in tiles.iter_mut() {
             if capture.row == tile.0.row && capture.column == tile.0.column {
+                let color = match players.get(capture.player) {
+                    Ok(player) => match player.kind {
+                        core::PlayerKind::Human => PLAYER_COLOR,
+                        core::PlayerKind::Bot(_) => BOT_COLOR,
+                    },
+                    Err(_) => return,
+                };
                 *tile.1 = DrawMode::Outlined {
-                    fill_mode: FillMode::color(Color::CYAN),
+                    fill_mode: FillMode::color(color),
                     outline_mode: StrokeMode::new(Color::BLACK, 1.0),
                 };
             }
@@ -62,11 +73,13 @@ fn select_tile(
                 Vec2::new(tile.1.translation.x, tile.1.translation.y),
                 Vec2::new(mouse_x, mouse_y),
             ) {
-                selections.send(core::SelectEvent {
-                    row: tile.0.row,
-                    column: tile.0.column,
-                    player: player.0,
-                })
+                match tile.0.state {
+                    core::TileState::Unowned(id) => selections.send(core::SelectEvent {
+                        id,
+                        player: player.0,
+                    }),
+                    _ => (),
+                }
             }
         }
     }
@@ -100,11 +113,30 @@ fn hover_tile(
     }
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, windows: ResMut<Windows>) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
     commands.spawn_bundle(UiCameraBundle::default());
 
-    let player_id = commands.spawn().insert(core::Player { score: 0 }).id();
+    change_resolution(windows);
+
+    let player_id = commands
+        .spawn()
+        .insert(core::Player {
+            score: 0,
+            kind: core::PlayerKind::Human,
+        })
+        .id();
+    let bot_id = commands
+        .spawn()
+        .insert(core::Player {
+            score: 0,
+            kind: core::PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
+        })
+        .id();
+
+    commands.insert_resource(core::GameState {
+        players: vec![player_id, bot_id],
+    });
 
     let shape = shapes::RegularPolygon {
         sides: 6,
@@ -129,19 +161,25 @@ fn setup(mut commands: Commands) {
 
     for row in 0..board_rows {
         for column in 0..board_columns {
-            let column_offset = board_x_offset + if row % 2 == 0 {
-                TILE_RADIUS * 3.0_f32.sqrt() / 2.0
-            } else {
-                0.0
-            };
+            let column_offset = board_x_offset
+                + if row % 2 == 0 {
+                    TILE_RADIUS * 3.0_f32.sqrt() / 2.0
+                } else {
+                    0.0
+                };
             let row_offset = board_y_offset;
 
             let initial_id = rng.gen_range(0..5);
 
             let (initial_color, initial_state) = if row == 0 && column == 0 {
-                (Color::CYAN, core::TileState::Owned(player_id))
+                (PLAYER_COLOR, core::TileState::Owned(player_id))
+            } else if row == 9 && column == 9 {
+                (BOT_COLOR, core::TileState::Owned(bot_id))
             } else {
-                (id_color_map[&initial_id], core::TileState::Unowned(initial_id))
+                (
+                    id_color_map[&initial_id],
+                    core::TileState::Unowned(initial_id),
+                )
             };
 
             commands
@@ -170,21 +208,26 @@ fn setup(mut commands: Commands) {
 #[cfg(target_family = "wasm")]
 fn change_resolution(mut windows: ResMut<Windows>) {
     let window = windows.primary_mut();
+    window.update_scale_factor_from_backend(SCALE_FACTOR as f64);
 
     let document = web_sys::window().unwrap().document().unwrap();
     let body = document.body().unwrap();
     let width = body.client_width();
     let height = body.client_height();
 
-    window.set_resolution(width as f32, height as f32);
+    window.set_resolution(width as f32 / SCALE_FACTOR, height as f32 / SCALE_FACTOR);
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn change_resolution(_time: Res<Time>, _windows: ResMut<Windows>) {}
+fn change_resolution(mut windows: ResMut<Windows>) {
+    let window = windows.primary_mut();
+    window.update_scale_factor_from_backend(SCALE_FACTOR as f64);
+}
 
 fn main() {
     App::new()
         .insert_resource(Msaa { samples: 4 })
+        .insert_resource(ClearColor(Color::rgb(0.4, 0.4, 0.4)))
         .add_event::<CursorMoved>()
         .add_event::<core::SelectEvent>()
         .add_event::<core::CaptureEvent>()
@@ -192,10 +235,10 @@ fn main() {
         .add_plugin(ShapePlugin)
         .add_startup_system(setup)
         .add_system_set(SystemSet::new().with_run_criteria(FixedTimestep::step(TIME_STEP as f64)))
-        .add_system(change_resolution)
         .add_system(hover_tile)
         .add_system(core::update_scores)
         .add_system(core::perform_selection.before(core::update_scores))
+        .add_system(core::perform_ai_move.before(select_tile))
         .add_system(select_tile.before(core::perform_selection))
         .add_system(update_tile_colors.after(core::perform_selection))
         .run();
