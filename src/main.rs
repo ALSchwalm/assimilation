@@ -1,4 +1,4 @@
-use bevy::{core::FixedTimestep, prelude::*};
+use bevy::{asset::AssetServerSettings, core::FixedTimestep, prelude::*};
 use bevy_prototype_lyon::prelude::*;
 use rand::{thread_rng, Rng};
 use std::collections::BTreeMap;
@@ -13,12 +13,31 @@ const TILE_RADIUS: f32 = 15.0;
 const TIME_STEP: f32 = 1.0 / 60.0;
 const SCALE_FACTOR: f32 = 2.0;
 
+#[derive(Component)]
+struct ScoreBoardEntry {
+    player: Entity,
+}
+
 fn point_inside_tile(tile_center: Vec2, point: Vec2) -> bool {
     let d = TILE_RADIUS * 2.0;
     let dx = (tile_center.x - point.x).abs() / d;
     let dy = (tile_center.y - point.y).abs() / d;
     let a = 0.25 * 3.0_f32.sqrt();
     (dy < a) && (a * dx + 0.25 * dy < 0.5 * a)
+}
+
+fn update_scoreboard(
+    players: Query<&core::Player>,
+    mut scores: Query<(&ScoreBoardEntry, &mut Text)>,
+) {
+    for mut score in scores.iter_mut() {
+        let player = match players.get(score.0.player) {
+            Ok(player) => player,
+            Err(_) => continue,
+        };
+
+        score.1.sections[0].value = format!("{} Score: {}", player.name, player.score);
+    }
 }
 
 fn update_tile_colors(
@@ -113,15 +132,17 @@ fn hover_tile(
     }
 }
 
-fn setup(mut commands: Commands, windows: ResMut<Windows>) {
+fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res<AssetServer>) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
     commands.spawn_bundle(UiCameraBundle::default());
 
-    change_resolution(windows);
+    set_scale(&mut windows);
+    let window = windows.get_primary().expect("Missing primary window");
 
     let player_id = commands
         .spawn()
         .insert(core::Player {
+            name: "Player".into(),
             score: 0,
             kind: core::PlayerKind::Human,
         })
@@ -129,6 +150,7 @@ fn setup(mut commands: Commands, windows: ResMut<Windows>) {
     let bot_id = commands
         .spawn()
         .insert(core::Player {
+            name: "Bot".into(),
             score: 0,
             kind: core::PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
         })
@@ -203,10 +225,90 @@ fn setup(mut commands: Commands, windows: ResMut<Windows>) {
                 });
         }
     }
+
+    commands
+        .spawn_bundle(NodeBundle {
+            style: Style {
+                size: Size::new(Val::Percent(100.0), Val::Px(20.0)),
+                justify_content: JustifyContent::Center,
+                margin: Rect {
+                    bottom: Val::Px(50.0),
+                    ..default()
+                },
+                ..default()
+            },
+            color: Color::NONE.into(),
+            ..default()
+        })
+        .with_children(|parent| {
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(300.0), Val::Px(50.0)),
+                        border: Rect::all(Val::Px(2.0)),
+                        align_content: AlignContent::Center,
+                        ..default()
+                    },
+                    color: Color::NONE.into(),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                margin: Rect::all(Val::Px(5.0)),
+                                ..default()
+                            },
+                            text: Text::with_section(
+                                "",
+                                TextStyle {
+                                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                    font_size: 10.0,
+                                    color: Color::WHITE,
+                                },
+                                Default::default(),
+                            ),
+                            ..default()
+                        })
+                        .insert(ScoreBoardEntry { player: player_id });
+
+                    parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                margin: Rect::all(Val::Px(5.0)),
+                                ..default()
+                            },
+                            text: Text::with_section(
+                                "",
+                                TextStyle {
+                                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                    font_size: 10.0,
+                                    color: Color::WHITE,
+                                },
+                                Default::default(),
+                            ),
+                            ..default()
+                        })
+                        .insert(ScoreBoardEntry { player: bot_id });
+                });
+        });
 }
 
 #[cfg(target_family = "wasm")]
-fn change_resolution(mut windows: ResMut<Windows>) {
+fn get_asset_location() -> AssetServerSettings {
+    AssetServerSettings::default()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn get_asset_location() -> AssetServerSettings {
+    AssetServerSettings {
+        asset_folder: "./site/assets".into(),
+        ..default()
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn set_scale(windows: &mut ResMut<Windows>) {
     let window = windows.primary_mut();
     window.update_scale_factor_from_backend(SCALE_FACTOR as f64);
 
@@ -219,7 +321,7 @@ fn change_resolution(mut windows: ResMut<Windows>) {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn change_resolution(mut windows: ResMut<Windows>) {
+fn set_scale(windows: &mut ResMut<Windows>) {
     let window = windows.primary_mut();
     window.update_scale_factor_from_backend(SCALE_FACTOR as f64);
 }
@@ -228,6 +330,7 @@ fn main() {
     App::new()
         .insert_resource(Msaa { samples: 4 })
         .insert_resource(ClearColor(Color::rgb(0.4, 0.4, 0.4)))
+        .insert_resource(get_asset_location())
         .add_event::<CursorMoved>()
         .add_event::<core::SelectEvent>()
         .add_event::<core::CaptureEvent>()
@@ -241,5 +344,6 @@ fn main() {
         .add_system(core::perform_ai_move.before(select_tile))
         .add_system(select_tile.before(core::perform_selection))
         .add_system(update_tile_colors.after(core::perform_selection))
+        .add_system(update_scoreboard.after(core::update_scores))
         .run();
 }

@@ -33,6 +33,7 @@ pub enum PlayerKind {
 
 #[derive(Component)]
 pub struct Player {
+    pub name: String,
     pub kind: PlayerKind,
     pub score: u32,
 }
@@ -209,6 +210,7 @@ mod test {
             .world
             .spawn()
             .insert(Player {
+                name: "Player".into(),
                 score: 0,
                 kind: PlayerKind::Human,
             })
