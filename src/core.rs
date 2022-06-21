@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug)]
 pub enum TileState {
@@ -47,6 +47,7 @@ pub struct GameState {
     // The head of this vec is always the 'current' player
     pub players: Vec<Entity>,
     pub phase: GamePhase,
+    pub ids: BTreeMap<u32, Color>,
 }
 
 pub fn for_each_selected_tile<T>(
@@ -70,8 +71,6 @@ pub fn for_each_selected_tile<T>(
         let mut did_capture = false;
 
         for mut tile in tiles.iter_mut() {
-            println!("Considering tile at {},{}", tile.row, tile.column);
-
             if owned_tiles.contains(&(tile.row, tile.column)) {
                 continue;
             }
@@ -96,28 +95,15 @@ pub fn for_each_selected_tile<T>(
                         continue;
                     }
 
-                    println!(
-                        "  candidate because owned tile at {},{}",
-                        tile.row + row_offset,
-                        tile.column + column_offset
-                    );
-
                     match tile.state {
                         TileState::Unowned(id) => {
                             if id == selection {
                                 owned_tiles.insert((tile.row, tile.column));
                                 did_capture = true;
                                 callback(&mut tile);
-                                println!("  captured tile at {},{}", tile.row, tile.column);
-                            } else {
-                                println!(
-                                    "  no capture because id = {}, but selection = {}",
-                                    id, selection
-                                );
                             }
                         }
-                        ref state => {
-                            println!("  no capture because tile state = {:?}", state);
+                        _ => {
                             continue;
                         }
                     }
@@ -149,7 +135,7 @@ pub fn perform_ai_move(
 
     let mut best_score = 0;
     let mut best_move = 0;
-    for id in 0..5 {
+    for id in 0..state.ids.len() as u32 {
         let mut score = 0;
         for_each_selected_tile(tiles.iter_mut().collect(), id, player, |_| {
             score += 1;
@@ -166,21 +152,68 @@ pub fn perform_ai_move(
     });
 }
 
-pub fn update_scores(mut players: Query<&mut Player>, tiles: Query<&Tile>) {
+pub fn update_scores(
+    mut state: ResMut<GameState>,
+    mut players: Query<(Entity, &mut Player)>,
+    mut tiles: Query<&mut Tile>,
+) {
     for mut player in players.iter_mut() {
-        player.score = 0;
+        player.1.score = 0;
     }
 
+    let mut total_unowned = 0;
     for tile in tiles.iter() {
         match tile.state {
             TileState::Owned(player) => {
                 if let Ok(mut player) = players.get_mut(player) {
-                    player.score += 1;
+                    player.1.score += 1;
                 }
             }
+            TileState::Unowned(_) => total_unowned += 1,
             _ => continue,
         }
     }
+
+    //For now, the game is over if either player can't move
+    let mut player_no_moves = None;
+    for player in players.iter() {
+        let mut possible_captures = false;
+        for possible_selection in state.ids.keys() {
+            for_each_selected_tile(
+                tiles.iter_mut().collect(),
+                *possible_selection,
+                player.0,
+                |_| {
+                    possible_captures = true;
+                },
+            );
+        }
+
+        if !possible_captures {
+            player_no_moves = Some(player.0);
+            break;
+        }
+    }
+
+    let player_no_moves = if let Some(player_no_moves) = player_no_moves {
+        player_no_moves
+    } else {
+        return;
+    };
+
+    for mut player in players.iter_mut() {
+        if player.0 != player_no_moves {
+            player.1.score += total_unowned;
+            break;
+        }
+    }
+
+    let winner = players
+        .iter()
+        .max_by(|player1, player2| player1.1.score.cmp(&player2.1.score))
+        .expect("Missing winner");
+
+    state.phase = GamePhase::Over(winner.0);
 }
 
 pub fn perform_selection(
@@ -244,6 +277,7 @@ mod test {
         app.insert_resource(GameState {
             players: vec![player_id],
             phase: GamePhase::Running,
+            ids: BTreeMap::from([(0, Color::GREEN)]),
         });
         app.add_system(update_scores);
         app.add_system(perform_selection.before(update_scores));

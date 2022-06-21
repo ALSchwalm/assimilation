@@ -18,6 +18,9 @@ struct ScoreBoardEntry {
     player: Entity,
 }
 
+#[derive(Component)]
+struct WinnerText;
+
 fn point_inside_tile(tile_center: Vec2, point: Vec2) -> bool {
     let d = TILE_RADIUS * 2.0;
     let dx = (tile_center.x - point.x).abs() / d;
@@ -27,8 +30,10 @@ fn point_inside_tile(tile_center: Vec2, point: Vec2) -> bool {
 }
 
 fn update_scoreboard(
+    state: Res<core::GameState>,
     players: Query<&core::Player>,
-    mut scores: Query<(&ScoreBoardEntry, &mut Text)>,
+    mut scores: Query<(&ScoreBoardEntry, &mut Text), Without<WinnerText>>,
+    mut winner_display: Query<(&mut WinnerText, &mut Text)>,
 ) {
     for mut score in scores.iter_mut() {
         let player = match players.get(score.0.player) {
@@ -38,6 +43,22 @@ fn update_scoreboard(
 
         score.1.sections[0].value = format!("{} Score: {}", player.name, player.score);
     }
+
+    let winner_id = match state.phase {
+        core::GamePhase::Over(id) => id,
+        _ => return,
+    };
+
+    let winner = match players.get(winner_id) {
+        Ok(player) => player,
+        Err(_) => return,
+    };
+
+    let mut display = winner_display
+        .iter_mut()
+        .next()
+        .expect("Missing winner display");
+    display.1.sections[0].value = format!("Winner: {}", winner.name);
 }
 
 fn update_tile_colors(
@@ -45,6 +66,7 @@ fn update_tile_colors(
     players: Query<&core::Player>,
     mut tiles: Query<(&core::Tile, &mut DrawMode)>,
 ) {
+    //TODO: just redo all tile colors if there has been a capture
     for capture in capture_events.iter() {
         for mut tile in tiles.iter_mut() {
             if capture.row == tile.0.row && capture.column == tile.0.column {
@@ -66,12 +88,18 @@ fn update_tile_colors(
 }
 
 fn select_tile(
+    state: Res<core::GameState>,
     mut selections: EventWriter<core::SelectEvent>,
     mouse_input: Res<Input<MouseButton>>,
     windows: Res<Windows>,
     players: Query<(Entity, &core::Player)>,
     tiles: Query<(&core::Tile, &Transform)>,
 ) {
+    match state.phase {
+        core::GamePhase::Over(_) => return,
+        _ => (),
+    }
+
     let window = windows.primary();
     let player = players.iter().next().expect("Missing player");
 
@@ -114,6 +142,11 @@ fn hover_tile(
     let window = windows.primary();
     let offset_x = window.width() / 2.0;
     let offset_y = window.height() / 2.0;
+
+    match state.phase {
+        core::GamePhase::Over(_) => return,
+        _ => (),
+    }
 
     let player_id = match players.get(state.players[0]) {
         Ok(player) => match player.kind {
@@ -209,9 +242,19 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
         })
         .id();
 
+    // TODO: this should just be in the gamestate
+    let id_color_map = BTreeMap::from([
+        (0, Color::RED),
+        (1, Color::BLUE),
+        (2, Color::YELLOW),
+        (3, Color::GREEN),
+        (4, Color::ORANGE),
+    ]);
+
     commands.insert_resource(core::GameState {
         players: vec![player_id, bot_id],
         phase: core::GamePhase::Running,
+        ids: id_color_map.clone(),
     });
 
     let shape = shapes::RegularPolygon {
@@ -221,13 +264,6 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
     };
 
     let mut rng = thread_rng();
-
-    let mut id_color_map = BTreeMap::new();
-    id_color_map.insert(0, Color::RED);
-    id_color_map.insert(1, Color::BLUE);
-    id_color_map.insert(2, Color::YELLOW);
-    id_color_map.insert(3, Color::GREEN);
-    id_color_map.insert(4, Color::ORANGE);
 
     let board_rows = 10;
     let board_columns = 10;
@@ -325,6 +361,25 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
                             ..default()
                         })
                         .insert(ScoreBoardEntry { player: player_id });
+
+                    parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                margin: Rect::all(Val::Px(5.0)),
+                                ..default()
+                            },
+                            text: Text::with_section(
+                                "",
+                                TextStyle {
+                                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                    font_size: 10.0,
+                                    color: Color::WHITE,
+                                },
+                                Default::default(),
+                            ),
+                            ..default()
+                        })
+                        .insert(WinnerText);
 
                     parent
                         .spawn_bundle(TextBundle {
