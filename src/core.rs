@@ -38,17 +38,25 @@ pub struct Player {
     pub score: u32,
 }
 
+pub enum GamePhase {
+    Running,
+    Over(Entity),
+}
+
 pub struct GameState {
     // The head of this vec is always the 'current' player
     pub players: Vec<Entity>,
+    pub phase: GamePhase,
 }
 
-fn for_each_selected_tile(
-    tiles: &mut Query<&mut Tile>,
+pub fn for_each_selected_tile<T>(
+    mut tiles: Vec<T>,
     selection: u32,
     player: Entity,
     mut callback: impl FnMut(&mut Tile),
-) {
+) where
+    T: core::ops::DerefMut<Target = Tile>,
+{
     let mut owned_tiles = tiles
         .iter()
         .filter(|tile| match tile.state {
@@ -143,7 +151,7 @@ pub fn perform_ai_move(
     let mut best_move = 0;
     for id in 0..5 {
         let mut score = 0;
-        for_each_selected_tile(&mut tiles, id, player, |_| {
+        for_each_selected_tile(tiles.iter_mut().collect(), id, player, |_| {
             score += 1;
         });
         if score > best_score {
@@ -182,15 +190,20 @@ pub fn perform_selection(
     mut captures: EventWriter<CaptureEvent>,
 ) {
     for selection in selections.iter() {
-        for_each_selected_tile(&mut tiles, selection.id, selection.player, |tile| {
-            tile.state = TileState::Owned(selection.player);
-            println!("  capture of tile at {},{}", tile.row, tile.column);
-            captures.send(CaptureEvent {
-                row: tile.row,
-                column: tile.column,
-                player: selection.player,
-            });
-        });
+        for_each_selected_tile(
+            tiles.iter_mut().collect(),
+            selection.id,
+            selection.player,
+            |tile| {
+                tile.state = TileState::Owned(selection.player);
+                println!("  capture of tile at {},{}", tile.row, tile.column);
+                captures.send(CaptureEvent {
+                    row: tile.row,
+                    column: tile.column,
+                    player: selection.player,
+                });
+            },
+        );
 
         state.players.rotate_right(1);
     }
@@ -230,6 +243,7 @@ mod test {
         app.add_event::<SelectEvent>();
         app.insert_resource(GameState {
             players: vec![player_id],
+            phase: GamePhase::Running,
         });
         app.add_system(update_scores);
         app.add_system(perform_selection.before(update_scores));

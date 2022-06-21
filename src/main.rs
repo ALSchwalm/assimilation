@@ -1,7 +1,7 @@
 use bevy::{asset::AssetServerSettings, core::FixedTimestep, prelude::*};
 use bevy_prototype_lyon::prelude::*;
 use rand::{thread_rng, Rng};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 use std::time::Duration;
 
@@ -105,28 +105,82 @@ fn select_tile(
 }
 
 fn hover_tile(
+    state: Res<core::GameState>,
+    players: Query<&core::Player>,
     mut cursor_events: EventReader<CursorMoved>,
-    mut tiles: Query<(&core::Tile, &mut Transform)>,
+    mut tiles: Query<(&mut core::Tile, &mut Transform)>,
     windows: Res<Windows>,
 ) {
     let window = windows.primary();
     let offset_x = window.width() / 2.0;
     let offset_y = window.height() / 2.0;
 
+    let player_id = match players.get(state.players[0]) {
+        Ok(player) => match player.kind {
+            core::PlayerKind::Human => state.players[0],
+            _ => return,
+        },
+        Err(_) => return,
+    };
+
+    let mut done_reset = false;
     for event in cursor_events.iter() {
         let mouse_x = event.position.x - offset_x;
         let mouse_y = event.position.y - offset_y;
 
-        for mut tile in tiles.iter_mut() {
+        // Only reset the positions once, and only do it if there has been some
+        // mouse movement
+        if !done_reset {
+            for mut tile in tiles.iter_mut() {
+                *tile.1 = tile.1.clone().with_scale(Vec3::new(1.0, 1.0, 0.0));
+                tile.1.translation.z = 0.0;
+            }
+            done_reset = true;
+        }
+
+        let mut hover_info = None;
+        for tile in tiles.iter() {
             if point_inside_tile(
                 Vec2::new(tile.1.translation.x, tile.1.translation.y),
                 Vec2::new(mouse_x, mouse_y),
             ) {
+                match tile.0.state {
+                    core::TileState::Unowned(id) => {
+                        hover_info = Some((id, tile.0.row, tile.0.column))
+                    }
+                    _ => continue,
+                }
+            }
+        }
+
+        let hover_info = if let Some(hover_info) = hover_info {
+            hover_info
+        } else {
+            return;
+        };
+
+        let mut is_reachable = false;
+        let mut selected_tiles = BTreeSet::new();
+        core::for_each_selected_tile(
+            tiles.iter_mut().map(|t| t.0).collect(),
+            hover_info.0,
+            player_id,
+            |tile| {
+                if tile.row == hover_info.1 && tile.column == hover_info.2 {
+                    is_reachable = true
+                }
+                selected_tiles.insert((tile.row, tile.column));
+            },
+        );
+
+        if !is_reachable {
+            return;
+        }
+
+        for mut tile in tiles.iter_mut() {
+            if selected_tiles.contains(&(tile.0.row, tile.0.column)) {
                 *tile.1 = tile.1.clone().with_scale(Vec3::new(1.1, 1.1, 0.0));
                 tile.1.translation.z = 1.0;
-            } else {
-                *tile.1 = tile.1.clone().with_scale(Vec3::new(1.0, 1.0, 0.0));
-                tile.1.translation.z = 0.0;
             }
         }
     }
@@ -137,7 +191,6 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
     commands.spawn_bundle(UiCameraBundle::default());
 
     set_scale(&mut windows);
-    let window = windows.get_primary().expect("Missing primary window");
 
     let player_id = commands
         .spawn()
@@ -158,6 +211,7 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
 
     commands.insert_resource(core::GameState {
         players: vec![player_id, bot_id],
+        phase: core::GamePhase::Running,
     });
 
     let shape = shapes::RegularPolygon {
