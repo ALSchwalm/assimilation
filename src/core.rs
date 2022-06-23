@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rand::{seq::SliceRandom, thread_rng};
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug)]
@@ -38,11 +39,13 @@ pub struct Player {
     pub score: u32,
 }
 
+#[derive(Clone)]
 pub enum GamePhase {
     Running,
     Over(Entity),
 }
 
+#[derive(Clone)]
 pub struct GameState {
     // The head of this vec is always the 'current' player
     pub players: Vec<Entity>,
@@ -242,13 +245,54 @@ pub fn perform_selection(
     }
 }
 
+pub fn load_level(
+    level: impl AsRef<str>,
+    players: &[Entity],
+    ids: Vec<u32>,
+    _random: bool,
+) -> Vec<Tile> {
+    //TODO: check the level is square
+    let mut tiles = vec![];
+    let level = level.as_ref().trim();
+    for (row, line) in level.lines().enumerate() {
+        for (column, tile_desc) in line.split_whitespace().enumerate() {
+            let row = row as i32;
+            let column = column as i32;
+            let state = match tile_desc {
+                "-" => TileState::Empty,
+                "|" => TileState::Unowned(
+                    *ids.as_slice()
+                        .choose(&mut thread_rng())
+                        .expect("Unable to make choice"),
+                ),
+                val => {
+                    let player_num: usize = val
+                        .parse()
+                        .expect(&format!("Unexpected value in level: {}", val));
+
+                    if player_num == 0 || player_num - 1 >= players.len() {
+                        panic!(
+                            "Invalid player number in level: {} (max {})",
+                            val,
+                            players.len()
+                        );
+                    }
+                    TileState::Owned(players[player_num - 1])
+                }
+            };
+            tiles.push(Tile { row, column, state })
+        }
+    }
+    tiles
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use bevy::ecs::event::Events;
+    use std::time::Duration;
 
-    #[test]
-    fn do_selection() {
+    fn test_app_setup() -> (App, GameState) {
         // Setup app
         let mut app = App::new();
 
@@ -262,6 +306,53 @@ mod test {
             })
             .id();
 
+        let bot_id = app
+            .world
+            .spawn()
+            .insert(Player {
+                name: "Bot".into(),
+                score: 0,
+                kind: PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
+            })
+            .id();
+
+        let state = GameState {
+            players: vec![player_id, bot_id],
+            phase: GamePhase::Running,
+            ids: BTreeMap::from([(0, Color::GREEN), (1, Color::YELLOW)]),
+        };
+
+        app.add_event::<CaptureEvent>();
+        app.add_event::<SelectEvent>();
+        app.insert_resource(state.clone());
+        app.add_system(update_scores);
+        app.add_system(perform_selection.before(update_scores));
+
+        (app, state)
+    }
+
+    #[test]
+    fn test_load_level_basic() {
+        let (_, state) = test_app_setup();
+
+        let desc = r#"
+- 1 | | | 2 -
+- | | | | | -
+"#;
+        let tiles = load_level(
+            desc,
+            &state.players,
+            state.ids.keys().cloned().collect(),
+            true,
+        );
+
+        assert_eq!(tiles.len(), 14);
+    }
+
+    #[test]
+    fn do_selection() {
+        let (mut app, state) = test_app_setup();
+
         for row in 0..10 {
             for column in 0..10 {
                 app.world.spawn().insert(Tile {
@@ -272,19 +363,9 @@ mod test {
             }
         }
 
-        app.add_event::<CaptureEvent>();
-        app.add_event::<SelectEvent>();
-        app.insert_resource(GameState {
-            players: vec![player_id],
-            phase: GamePhase::Running,
-            ids: BTreeMap::from([(0, Color::GREEN)]),
-        });
-        app.add_system(update_scores);
-        app.add_system(perform_selection.before(update_scores));
-
         let mut events = app.world.resource_mut::<Events<SelectEvent>>();
         events.send(SelectEvent {
-            player: player_id,
+            player: state.players[0],
             id: 0,
         });
 

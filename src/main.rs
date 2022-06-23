@@ -1,11 +1,11 @@
 use bevy::{asset::AssetServerSettings, core::FixedTimestep, prelude::*};
 use bevy_prototype_lyon::prelude::*;
-use rand::{thread_rng, Rng};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 use std::time::Duration;
 
 mod core;
+mod levels;
 
 const PLAYER_COLOR: Color = Color::CYAN;
 const BOT_COLOR: Color = Color::PINK;
@@ -251,11 +251,20 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
         (4, Color::ORANGE),
     ]);
 
-    commands.insert_resource(core::GameState {
+    let gamestate = core::GameState {
         players: vec![player_id, bot_id],
         phase: core::GamePhase::Running,
         ids: id_color_map.clone(),
-    });
+    };
+
+    let tiles = core::load_level(
+        levels::RING,
+        &gamestate.players,
+        gamestate.ids.keys().cloned().collect(),
+        true,
+    );
+
+    commands.insert_resource(gamestate);
 
     let shape = shapes::RegularPolygon {
         sides: 6,
@@ -263,57 +272,59 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
         ..shapes::RegularPolygon::default()
     };
 
-    let mut rng = thread_rng();
+    let (max_row, max_column) = tiles
+        .iter()
+        .map(|tile| (tile.row, tile.column))
+        .max()
+        .expect("Unable to get board dimensions");
 
-    let board_rows = 10;
-    let board_columns = 10;
-
+    let board_rows = max_row + 1;
+    let board_columns = max_column + 1;
     let board_x_offset = -(TILE_RADIUS * 3.0_f32.sqrt() * board_columns as f32) / 2.0;
-    let board_y_offset = -(TILE_RADIUS * 1.5 * board_rows as f32) / 2.0;
+    let board_y_offset = (TILE_RADIUS * 1.5 * board_rows as f32) / 2.0;
 
-    for row in 0..board_rows {
-        for column in 0..board_columns {
-            let column_offset = board_x_offset
-                + if row % 2 == 0 {
-                    TILE_RADIUS * 3.0_f32.sqrt() / 2.0
-                } else {
-                    0.0
-                };
-            let row_offset = board_y_offset;
+    for tile in tiles {
+        let row = tile.row;
+        let column = tile.column;
 
-            let initial_id = rng.gen_range(0..5);
-
-            let (initial_color, initial_state) = if row == 0 && column == 0 {
-                (PLAYER_COLOR, core::TileState::Owned(player_id))
-            } else if row == 9 && column == 9 {
-                (BOT_COLOR, core::TileState::Owned(bot_id))
+        let column_offset = board_x_offset
+            + if row % 2 == 0 {
+                TILE_RADIUS * 3.0_f32.sqrt() / 2.0
             } else {
-                (
-                    id_color_map[&initial_id],
-                    core::TileState::Unowned(initial_id),
-                )
+                0.0
             };
+        let row_offset = board_y_offset;
 
-            commands
-                .spawn_bundle(GeometryBuilder::build_as(
-                    &shape,
-                    DrawMode::Outlined {
-                        fill_mode: FillMode::color(initial_color),
-                        outline_mode: StrokeMode::new(Color::BLACK, 1.0),
-                    },
-                    Transform::from_xyz(
-                        column as f32 * TILE_RADIUS * 3.0_f32.sqrt() + column_offset,
-                        row as f32 * TILE_RADIUS * 1.5 + row_offset,
-                        0.0,
-                    )
-                    .with_rotation(Quat::from_rotation_z(PI as f32 / 6.0)),
-                ))
-                .insert(core::Tile {
-                    row,
-                    column,
-                    state: initial_state,
-                });
-        }
+        let initial_color = match tile.state {
+            core::TileState::Owned(id) => {
+                if id == player_id {
+                    PLAYER_COLOR
+                } else {
+                    BOT_COLOR
+                }
+            }
+            core::TileState::Unowned(id) => id_color_map[&id],
+            core::TileState::Empty => {
+                commands.spawn().insert(tile);
+                continue;
+            }
+        };
+
+        commands
+            .spawn_bundle(GeometryBuilder::build_as(
+                &shape,
+                DrawMode::Outlined {
+                    fill_mode: FillMode::color(initial_color),
+                    outline_mode: StrokeMode::new(Color::BLACK, 1.0),
+                },
+                Transform::from_xyz(
+                    column as f32 * TILE_RADIUS * 3.0_f32.sqrt() + column_offset,
+                    row_offset - row as f32 * TILE_RADIUS * 1.5,
+                    0.0,
+                )
+                .with_rotation(Quat::from_rotation_z(PI as f32 / 6.0)),
+            ))
+            .insert(tile);
     }
 
     commands
