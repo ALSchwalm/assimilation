@@ -34,6 +34,7 @@ pub enum PlayerKind {
 
 #[derive(Component)]
 pub struct Player {
+    pub color: Color,
     pub name: String,
     pub kind: PlayerKind,
     pub score: u32,
@@ -303,6 +304,7 @@ mod test {
                 name: "Player".into(),
                 score: 0,
                 kind: PlayerKind::Human,
+                color: Color::CYAN,
             })
             .id();
 
@@ -313,6 +315,7 @@ mod test {
                 name: "Bot".into(),
                 score: 0,
                 kind: PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
+                color: Color::RED,
             })
             .id();
 

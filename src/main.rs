@@ -64,23 +64,21 @@ fn update_scoreboard(
 fn update_tile_colors(
     mut capture_events: EventReader<core::CaptureEvent>,
     players: Query<&core::Player>,
-    mut tiles: Query<(&core::Tile, &mut DrawMode)>,
+    mut tiles: Query<(&core::Tile, &mut DrawMode, &mut Transform)>,
 ) {
     //TODO: just redo all tile colors if there has been a capture
     for capture in capture_events.iter() {
         for mut tile in tiles.iter_mut() {
             if capture.row == tile.0.row && capture.column == tile.0.column {
                 let color = match players.get(capture.player) {
-                    Ok(player) => match player.kind {
-                        core::PlayerKind::Human => PLAYER_COLOR,
-                        core::PlayerKind::Bot(_) => BOT_COLOR,
-                    },
+                    Ok(player) => player.color,
                     Err(_) => return,
                 };
                 *tile.1 = DrawMode::Outlined {
                     fill_mode: FillMode::color(color),
-                    outline_mode: StrokeMode::new(Color::BLACK, 1.0),
+                    outline_mode: StrokeMode::new(Color::WHITE, 1.0),
                 };
+                tile.2.translation.z = 1.0;
             }
         }
         println!("Capture of tile at {},{}", capture.row, capture.column);
@@ -136,7 +134,7 @@ fn hover_tile(
     state: Res<core::GameState>,
     players: Query<&core::Player>,
     mut cursor_events: EventReader<CursorMoved>,
-    mut tiles: Query<(&mut core::Tile, &mut Transform)>,
+    mut tiles: Query<(&mut core::Tile, &mut DrawMode, &mut Transform)>,
     windows: Res<Windows>,
 ) {
     let window = windows.primary();
@@ -148,9 +146,9 @@ fn hover_tile(
         _ => (),
     }
 
-    let player_id = match players.get(state.players[0]) {
+    let (player_id, player_color) = match players.get(state.players[0]) {
         Ok(player) => match player.kind {
-            core::PlayerKind::Human => state.players[0],
+            core::PlayerKind::Human => (state.players[0], player.color),
             _ => return,
         },
         Err(_) => return,
@@ -165,8 +163,20 @@ fn hover_tile(
         // mouse movement
         if !done_reset {
             for mut tile in tiles.iter_mut() {
-                *tile.1 = tile.1.clone().with_scale(Vec3::new(1.0, 1.0, 0.0));
-                tile.1.translation.z = 0.0;
+                let (color, border, zpos) = match tile.0.state {
+                    core::TileState::Unowned(id) => (state.ids[&id], Color::BLACK, 0.0),
+                    core::TileState::Owned(player) => {
+                        let player = players.get(player).expect("Missing player");
+                        (player.color, Color::WHITE, 1.0)
+                    }
+                    _ => continue,
+                };
+
+                *tile.1 = DrawMode::Outlined {
+                    fill_mode: FillMode::color(color),
+                    outline_mode: StrokeMode::new(border, 1.0),
+                };
+                tile.2.translation.z = zpos;
             }
             done_reset = true;
         }
@@ -174,7 +184,7 @@ fn hover_tile(
         let mut hover_info = None;
         for tile in tiles.iter() {
             if point_inside_tile(
-                Vec2::new(tile.1.translation.x, tile.1.translation.y),
+                Vec2::new(tile.2.translation.x, tile.2.translation.y),
                 Vec2::new(mouse_x, mouse_y),
             ) {
                 match tile.0.state {
@@ -212,8 +222,31 @@ fn hover_tile(
 
         for mut tile in tiles.iter_mut() {
             if selected_tiles.contains(&(tile.0.row, tile.0.column)) {
-                *tile.1 = tile.1.clone().with_scale(Vec3::new(1.1, 1.1, 0.0));
-                tile.1.translation.z = 1.0;
+                let (color, border) = match tile.0.state {
+                    core::TileState::Owned(_) => (player_color, Color::WHITE),
+                    core::TileState::Unowned(_) => {
+                        let mut color = player_color.as_hsla();
+                        match color {
+                            Color::Hsla {
+                                hue: _,
+                                ref mut saturation,
+                                ref mut lightness,
+                                alpha: _,
+                            } => {
+                                *lightness = 0.6;
+                                *saturation = 0.6;
+                            }
+                            _ => unreachable!(),
+                        }
+                        (color, Color::rgb(0.9, 0.9, 0.9))
+                    }
+                    _ => panic!("Invalid hovered tile"),
+                };
+                *tile.1 = DrawMode::Outlined {
+                    fill_mode: FillMode::color(color),
+                    outline_mode: StrokeMode::new(border, 1.0),
+                };
+                tile.2.translation.z = 1.0;
             }
         }
     }
@@ -231,6 +264,7 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
             name: "Player".into(),
             score: 0,
             kind: core::PlayerKind::Human,
+            color: PLAYER_COLOR,
         })
         .id();
     let bot_id = commands
@@ -239,16 +273,17 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
             name: "Bot".into(),
             score: 0,
             kind: core::PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
+            color: BOT_COLOR,
         })
         .id();
 
     // TODO: this should just be in the gamestate
     let id_color_map = BTreeMap::from([
-        (0, Color::RED),
-        (1, Color::BLUE),
-        (2, Color::YELLOW),
-        (3, Color::GREEN),
-        (4, Color::ORANGE),
+        (0, Color::hex("483DDB").unwrap()),
+        (1, Color::hex("DB3E3A").unwrap()),
+        (2, Color::hex("68DB48").unwrap()),
+        (3, Color::hex("DBC132").unwrap()),
+        (4, Color::hex("DB8259").unwrap()),
     ]);
 
     let gamestate = core::GameState {
@@ -295,15 +330,15 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
             };
         let row_offset = board_y_offset;
 
-        let initial_color = match tile.state {
+        let (initial_color, border_color, z_pos) = match tile.state {
             core::TileState::Owned(id) => {
                 if id == player_id {
-                    PLAYER_COLOR
+                    (PLAYER_COLOR, Color::WHITE, 1.0)
                 } else {
-                    BOT_COLOR
+                    (BOT_COLOR, Color::WHITE, 1.0)
                 }
             }
-            core::TileState::Unowned(id) => id_color_map[&id],
+            core::TileState::Unowned(id) => (id_color_map[&id], Color::BLACK, 0.0),
             core::TileState::Empty => {
                 commands.spawn().insert(tile);
                 continue;
@@ -315,12 +350,12 @@ fn setup(mut commands: Commands, mut windows: ResMut<Windows>, asset_server: Res
                 &shape,
                 DrawMode::Outlined {
                     fill_mode: FillMode::color(initial_color),
-                    outline_mode: StrokeMode::new(Color::BLACK, 1.0),
+                    outline_mode: StrokeMode::new(border_color, 1.0),
                 },
                 Transform::from_xyz(
                     column as f32 * TILE_RADIUS * 3.0_f32.sqrt() + column_offset,
                     row_offset - row as f32 * TILE_RADIUS * 1.5,
-                    0.0,
+                    z_pos,
                 )
                 .with_rotation(Quat::from_rotation_z(PI as f32 / 6.0)),
             ))
