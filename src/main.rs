@@ -91,7 +91,7 @@ fn select_tile(
     mouse_input: Res<Input<MouseButton>>,
     windows: Res<Windows>,
     players: Query<(Entity, &core::Player)>,
-    tiles: Query<(&core::Tile, &Transform)>,
+    mut tiles: Query<(&mut core::Tile, &Transform)>,
 ) {
     match state.phase {
         core::GamePhase::Over(_) => return,
@@ -99,7 +99,7 @@ fn select_tile(
     }
 
     let window = windows.primary();
-    let player = players.iter().next().expect("Missing player");
+    let player =  players.get(state.players[0]).expect("Missing player");
 
     if mouse_input.just_pressed(MouseButton::Left) {
         let pos = if let Some(pos) = window.cursor_position() {
@@ -113,19 +113,40 @@ fn select_tile(
         let mouse_x = pos.x - offset_x;
         let mouse_y = pos.y - offset_y;
 
-        for tile in tiles.iter() {
-            if point_inside_tile(
+        let tile = tiles.iter().find(|tile| {
+            point_inside_tile(
                 Vec2::new(tile.1.translation.x, tile.1.translation.y),
                 Vec2::new(mouse_x, mouse_y),
-            ) {
-                match tile.0.state {
-                    core::TileState::Unowned(id) => selections.send(core::SelectEvent {
+            )
+        }).map(|tile| tile.0.clone());
+
+        let tile = if let Some(tile) = tile {
+            tile
+        } else {
+            return;
+        };
+
+        match tile.state {
+            core::TileState::Unowned(id) => {
+                let mut valid = false;
+                core::for_each_selected_tile(
+                    tiles.iter_mut().map(|t| t.0).collect(),
+                    id,
+                    state.players[0],
+                    |valid_tile| {
+                        if valid_tile.row == tile.row && valid_tile.column == tile.column {
+                            valid = true;
+                        }
+                    },
+                );
+                if valid {
+                    selections.send(core::SelectEvent {
                         id,
                         player: player.0,
-                    }),
-                    _ => (),
+                    })
                 }
-            }
+            },
+            _ => (),
         }
     }
 }

@@ -2,14 +2,14 @@ use bevy::prelude::*;
 use rand::{seq::SliceRandom, thread_rng};
 use std::collections::{BTreeMap, HashSet};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TileState {
     Empty,
     Owned(Entity),
     Unowned(u32),
 }
 
-#[derive(Component)]
+#[derive(Clone, Component)]
 pub struct Tile {
     pub row: i32,
     pub column: i32,
