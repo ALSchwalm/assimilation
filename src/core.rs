@@ -27,12 +27,13 @@ pub struct CaptureEvent {
     pub player: Entity,
 }
 
+#[derive(Clone, Debug)]
 pub enum PlayerKind {
     Human,
-    Bot(Timer),
+    Bot,
 }
 
-#[derive(Component)]
+#[derive(Clone, Debug, Component)]
 pub struct Player {
     pub color: Color,
     pub name: String,
@@ -42,6 +43,7 @@ pub struct Player {
 
 #[derive(Clone)]
 pub enum GamePhase {
+    Config,
     Running,
     Over(Entity),
 }
@@ -129,13 +131,11 @@ pub fn perform_ai_move(
 ) {
     let player = match players.get(state.players[0]) {
         Ok(player) => match player.kind {
-            PlayerKind::Bot(_) => state.players[0],
+            PlayerKind::Bot => state.players[0],
             _ => return,
         },
         Err(_) => return,
     };
-
-    println!("First player is a bot. Making a move");
 
     let mut best_score = 0;
     let mut best_move = 0;
@@ -233,7 +233,6 @@ pub fn perform_selection(
             selection.player,
             |tile| {
                 tile.state = TileState::Owned(selection.player);
-                println!("  capture of tile at {},{}", tile.row, tile.column);
                 captures.send(CaptureEvent {
                     row: tile.row,
                     column: tile.column,
@@ -314,7 +313,7 @@ mod test {
             .insert(Player {
                 name: "Bot".into(),
                 score: 0,
-                kind: PlayerKind::Bot(Timer::new(Duration::from_secs(1), false)),
+                kind: PlayerKind::Bot,
                 color: Color::RED,
             })
             .id();

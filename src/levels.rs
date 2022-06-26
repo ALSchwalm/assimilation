@@ -11,7 +11,7 @@ pub const SQUARE: &str = r#"
 1 | | | | | | | | |
 "#;
 
-pub const RING: &str = r#"
+pub const HEXAGON: &str = r#"
 - - - | | | | | | | - - -
 - - - | | | | | | | | - -
 - - | | | | | | | | | - -

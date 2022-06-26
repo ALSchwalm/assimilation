@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.7"
+bevy_egui = "0.14.0"
 bevy_prototype_lyon = "0.5.0"
 web-sys = { version = "0.3.57", features = ["Window", "Document", "Element", "HtmlElement"] }
 rand = "0.8.5"
