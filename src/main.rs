@@ -538,6 +538,8 @@ fn show_title(
     egui::Area::new("main")
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(egui_ctx.ctx_mut(), |ui| {
+            ui.style_mut().visuals.override_text_color = Some(egui::Color32::WHITE);
+
             ui.label(egui::RichText::new("Assimilation").size(30.0));
             ui.add_space(30.0);
 
